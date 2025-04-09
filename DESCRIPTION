@@ -1,0 +1,13 @@
+Package: sentiment-song-analysis
+Title: Sentiment Analysis of Popular Songs
+Version: 0.1.0
+Authors@R: 
+    person(given = "Group", family = "16", role = c("aut", "cre"))
+Description: Analyzes Spotify top songs dataset for musical features and trends.
+Depends: R (>= 3.5.0)
+Imports: 
+    ggplot2,
+    dplyr,
+    readr,
+    lubridate,
+    stringr
