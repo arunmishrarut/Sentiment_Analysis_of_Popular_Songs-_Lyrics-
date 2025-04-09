@@ -1,0 +1,356 @@
+---
+title: "597-Spotify"
+author: "Yiming Tan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(janeaustenr)
+library(tidytext)
+library(wordcloud2)
+library(readxl)
+library(fastDummies)
+library(reshape2)
+library(RColorBrewer)
+library(scales)
+library(tm)
+library(reshape)
+
+# devtools::install_github("kassambara/factoextra")
+# devtools::install_github("qinwf/jiebaR")
+library(factoextra) #packages to cluster
+library(jiebaR) #packages to cut the words
+library(stringr)
+```
+
+Spotify is a digital music, podcast, and video service that gives you access to millions of songs and other content from creators all over the world.\
+Data in this report is extracted from [Kaggle-Spotify-Data 1921-2020](https://www.kaggle.com/datasets/ektanegi/spotifydata-19212020?resource=download), which contains the top 100 songs in each year from 1921-2020 in Spotify (totally 169k songs) as the description.\
+In fact, there are some data set limitations here:\
+There are nearly 2000 songs from each year. The popularity metric(range 0-100) is based on the number of times the song was played on Spotify. Thus, it is naturally lower for songs in the older decades and higher for songs in the present decade.
+
+# Attributes: understand the data
+
+```{r}
+music <- read.csv("../597DWrangl_23SP/data/Spotify-Data 1921-2020.csv")
+glimpse(music) # 169,909 * 19
+
+# add attributes "decade"; transfer the unit of duration from "ms" to "s"
+music <- music %>% 
+  mutate(decade = paste0(substr(year, 1, 3), "0s"),
+         duration = duration_ms/1000)
+
+# rearrange the column order
+music <- select(music, "name", "artists", "year", "decade","tempo", 
+                "energy","danceability", "loudness", "liveness",
+                "valence","duration", "acousticness", "speechiness",
+                "instrumentalness", "key", "popularity")
+
+head(music)
+dim(music)
+```
+
+## Distribution of each attribute
+
+First take a look at the distribution of audio features in the 2010s.\
+- `Acousticness`, `Instrumentalness`, `Speechiness`, `liveness`, and `duration` attributes are all positively skewed, which suggests that most of the songs have lower values in these attributes, with a few songs having much higher values.\
+- `Danceability`, `Energy`, and `Loudness` attributes are negatively skewed, which indicates that the majority of songs in 2010s have high values for these attributes.\
+- The `Valence` attribute is a slightly positively skewed, which implies the tone of the songs from 2010s tends to be more negative.
+
+```{r}
+# audio features in 2010s
+audio_2010s <- music %>% 
+  filter(decade == "2010s") %>% 
+  .[,c(5:15)]
+
+# Convert data frame to long format
+audio_long <- tidyr::gather(audio_2010s, 
+                            key = "variable", value = "value")
+
+# Plot density plots with facets
+ggplot(audio_long, aes(x = value, fill = variable)) +
+  geom_density(alpha = 0.5) +
+  theme(plot.title = element_text(hjust = .5)) +
+  labs(x = "Value", y = "Density", 
+       title = "Audio Feature Density Plots") +
+  scale_fill_discrete(name = "Variable") +
+  facet_wrap(~variable, nrow = 4, ncol = 3, scales = "free")
+
+```
+
+## Relationship between audio feature
+
+It appears that there is a highly positive correlation between loudness and energy, and both variables show a relatively negative correlation with acousticness.\
+Plus, danceability may have a moderately positive correlation with valence, which suggests that the more positive the mood of a song is, the more suitable it is for dancing.
+
+```{r}
+# normalize each variables
+audio <- music[,c(5:15)]
+
+normalization <-function(x){
+  return( (x - min(x,na.rm = T))/
+            ( max(x, na.rm = T) - min(x, na.rm = T)) )
+}
+
+for (i in 1:length(audio)){
+  audio[,i] = normalization(audio[,i])
+}
+
+audio %>%
+  cor() %>%
+  melt() %>%
+  ggplot(aes(X1, X2, fill=value)) +
+  geom_tile(color = 'white') +
+  scale_fill_gradient2(low = "#2C7BB6", mid = "white", 
+                       high = "#D7191C", midpoint = 0, 
+                       name = "correlations", limits = c(-1, 1),
+                       na.value = "gray90", guide = "colorbar",
+                       oob = scales::squish) +
+  geom_text(aes(label = paste(round(value, 2) * 100, '%')), 
+            size = 2.5, color = 'black') +
+  labs(x = '', y = '', 
+       title = 'Relationship between music features') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+# Decade-wise analysis of each attribute
+
+## Average Change in features over the decades
+
+```{r}
+audio_decade <- music[,c(4,5:15)]
+
+audio_decade %>%
+  group_by(decade) %>%
+  summarize(across(starts_with("tempo"), mean),
+            across(starts_with("energy"), mean),
+            across(starts_with("danceability"), mean),
+            across(starts_with("loudness"), mean),
+            across(starts_with("liveness"), mean),
+            across(starts_with("valence"), mean),
+            across(starts_with("duration"), mean),
+            across(starts_with("acousticness"), mean),
+            across(starts_with("speechiness"), mean),
+            across(starts_with("instrumentalness"), mean),
+            across(starts_with("key"), mean)) %>%
+  pivot_longer(cols = -decade, names_to = "audio_feature", 
+               values_to = "value") %>%
+  ggplot(aes(x = decade, y = value, group = audio_feature, 
+             color = audio_feature)) +
+  geom_line() +
+  facet_wrap(~ audio_feature, nrow = 4, ncol = 3, 
+             scales = "free_y") +
+  labs(title = "Change in Features by Decade") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Top Artist in each decade
+
+```{r}
+# select the top 100 music each year based on the popularity variable
+
+music_top100 <- music %>%
+  group_by(year) %>%
+  arrange(desc(popularity)) %>%
+  top_n(100, popularity) %>%
+  ungroup()
+
+# select 8 top artists for each decades
+top_artist <- music_top100 %>%
+  group_by(decade) %>%
+  count(artists) %>%
+  mutate(prop = n / sum(n)) %>%
+  group_by(decade) %>%
+  top_n(8, prop) %>%
+  ungroup()
+
+# draw a stacked bar chart
+top_artist %>%
+  arrange(decade, desc(prop)) %>%
+  mutate(artists = factor(artists, unique(artists))) %>%
+  ggplot(aes(decade, prop, fill = artists)) +
+  geom_bar(stat = 'identity', color = 'white', show.legend = F) +
+  geom_text(aes(label = artists), size = 2.5, color = 'black',
+            position = position_stack(vjust = .5)) +
+  theme(plot.title = element_text(hjust = .5)) +
+  labs(title = 'Hottest artists in each decade', y = 'Percent', x = 'Decade')
+```
+
+# What makes a spotify song popular
+
+-   What features are necessary for a track to become a hit?\
+-   Is a track that sounds happier and euphoric is more popular than one that sounds sadder or angry?\
+-   What features are necessary for a track to be danceable.\
+-   Why Pink Floyd tracks are not popular than the rest of the tracks that are?\
+
+## Attributes vs. Popularity
+Relevant features for a song to become a hit:  
+Less Acousticness More Energetic More Explicit Less Instrumental Higher Loudness More danceable
+
+```{r}
+music_popularity_order <-
+  music[order(music$popularity,decreasing = TRUE),]
+
+music_top1000 <- music_popularity_order[1:10000,]
+
+ggplot(music_top1000, aes(popularity, danceability, color = popularity)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE,alpha=.4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")+geom_smooth(method='lm')
+```
+
+We find that highly popular songs have low acousticnes.
+```{r}
+ggplot(music_top1000, aes(popularity, 
+                          acousticness, color = popularity)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE,alpha=.4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e") +
+  geom_smooth(method='lm')
+```
+
+High energy is associated with increased popularity of the song.
+```{r}
+ggplot(music_top1000, aes(popularity,energy, color = popularity)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE,alpha=.4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e") +
+  geom_smooth(method='lm')
+```
+
+Low intrumentalness is reflected with more popularity of the song.
+```{r}
+ggplot(music_top1000, aes(popularity,instrumentalness, color = popularity)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE,alpha=.4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e") +
+  geom_smooth(method='lm')
+```
+
+Loudness is more related to higher popularity.
+```{r}
+ggplot(music_top1000, aes(popularity,loudness, color = popularity)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE,alpha=.4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e") + geom_smooth(method='lm')
+```
+
+## Based on the relevant attributes of popularity: what features are important for a song to be danceable?
+Features for a song to be danceable:  
+Energy Loudness Valence
+
+```{r}
+# function to scale the values between 0 and 1
+regularization <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+danceable_music <- music_top1000 %>% 
+  arrange(desc(popularity)) %>% 
+  select(-c(name,artists,year,decade,popularity,duration)) %>% 
+  mutate(across(everything(), regularization)) %>% 
+  pivot_longer(cols = -c(danceability), names_to = "variable", values_to = "value")
+
+ggplot(danceable_music, aes(danceability, value)) + 
+  geom_line() + 
+  facet_wrap(~variable, scales = "free_y", ncol = 1)
+```
+
+## Most common words in title with a WordCloud
+WordCloud from 21th Century
+```{r}
+#  avoid the brackets, they have the singer names and words like feat,etc.
+music_top100_21stCentury <-
+  music_top100 %>% 
+  filter(decade %in% c("2000s", "2010s"))
+
+music_top100_21stCentury$name <- 
+  str_extract_all(music_top100_21stCentury$name, "[a-zA-Z ]+") %>% 
+  sapply(paste0, collapse = " ")
+
+seg <- unlist(str_split(music_top100_21stCentury$name, "\\s+"))
+
+# Remove common words (stop words)
+stop_words <- c(stopwords("english"), "feat", "remix", "mix")
+seg <- seg[!tolower(seg) %in% stop_words]
+
+wordcloud2(table(seg), size = 1.5)
+```
+
+WordCloud from late 20th Century
+```{r}
+music_top100_late20thCentury <-
+  music_top100 %>% 
+  filter(decade %in% c("1960s", "1970s", "1980s", "1990s"))
+
+music_top100_late20thCentury$name <- 
+  str_extract_all(music_top100_late20thCentury$name, 
+                  "[a-zA-Z ]+") %>% 
+  sapply(paste0, collapse = " ")
+
+seg <- unlist(str_split(music_top100_late20thCentury$name, "\\s+"))
+
+# Remove common words (stop words)
+stop_words <- c(stopwords("english"), "feat", "remix", "mix")
+seg <- seg[!tolower(seg) %in% stop_words]
+
+wordcloud2(table(seg), size = 1.5)
+```
+
+
+WordCloud from early 20th Century
+```{r}
+music_top100_early20thCentury <-
+  music_top100 %>% 
+  filter(decade %in% c("1920s", "1930s", "1940s", "1950s"))
+
+music_top100_early20thCentury$name <- 
+  str_extract_all(music_top100_early20thCentury$name, 
+                  "[a-zA-Z ]+") %>% 
+  sapply(paste0, collapse = " ")
+
+seg <- unlist(str_split(music_top100_early20thCentury$name, "\\s+"))
+
+# Remove common words (stop words)
+stop_words <- c(stopwords("english"), "feat", "remix", "mix")
+seg <- seg[!tolower(seg) %in% stop_words]
+
+wordcloud2(table(seg), size = 1.5)
+```
+
+
+# References
+
+-   [Spotify Top 100 Songs Analysis by R](https://www.kaggle.com/code/teresawu726/spotify-top-100-songs-analysis-by-r)
+    -   Relationship between music features
+    -   Top Artist in each year/decade
+    -   Top genre in each year/decade
+    -   Predict the top song in future year
+-   [Spotify Music Data Analysis](https://www.kaggle.com/code/vikarna/spotify-music-data-analysis)
+    -   what makes a spotify song popular
+-   [Spotify Songs Analysis](https://www.kaggle.com/code/ikshitgupta/spotify-songs-analysis)
+-   possible viz
+-   [EDA_Geetika](https://www.kaggle.com/code/geetikasingla11/eda-geetika)
+    -   attributes
+    -   attributes vs. popularity
+    -   year-wise analysis of each attributes
+-   [Spotify Visual and EDA](https://www.kaggle.com/code/agustin222/spotify-visual-and-eda)
+    -   Relationship between best five and the top genre
+    -   most common words in title with a WordCloud
+-   [Expert Level Seaborn Viz](https://www.kaggle.com/code/surendra01/expert-level-seaborn-viz)
+    -   different types of plot to refer
+-   [EDA Spotify Top100 songs of 2010-2019](https://www.kaggle.com/code/arcesblas/eda-spotify-top-100-songs-of-2010-2019)
+    -   have the songs become sadder?
+    -   primary audio features over years
